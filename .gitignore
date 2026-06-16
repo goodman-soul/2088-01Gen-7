@@ -1,0 +1,15 @@
+## Build outputs
+pipe_chat
+*.o
+*.dSYM/
+
+## Logs and temp files
+*.log
+*.out
+*.tmp
+test_output.txt
+
+## Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
