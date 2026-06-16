@@ -1,80 +1,165 @@
 #!/bin/bash
 
-set -e
+PASS=0
+FAIL=0
+STATIC_PASS=0
+STATIC_FAIL=0
+RUNTIME_PASS=0
+RUNTIME_FAIL=0
 
 echo "=== 管道聊天程序测试 ==="
 echo ""
 
-# 测试1: 检查程序是否存在
-echo "[测试1] 检查可执行文件..."
-if [ -x "./pipe_chat" ]; then
-    echo "  ✓ pipe_chat 可执行文件存在"
-else
-    echo "  ✗ pipe_chat 可执行文件不存在"
-    exit 1
-fi
-
-# 测试2: 检查编译警告
-echo ""
-echo "[测试2] 重新编译检查警告..."
-make clean > /dev/null 2>&1
-if make 2>&1 | grep -q "warning"; then
-    echo "  ✗ 编译存在警告"
-    make 2>&1 | grep "warning"
-    exit 1
-else
-    echo "  ✓ 编译无警告"
-fi
-
-# 测试3: 静态分析代码结构
-echo ""
-echo "[测试3] 检查代码关键功能..."
-
-check_feature() {
-    local pattern=$1
-    local desc=$2
+check_static() {
+    local desc=$1
+    local pattern=$2
     if grep -q "$pattern" pipe_chat.c; then
         echo "  ✓ $desc"
+        PASS=$((PASS + 1))
+        STATIC_PASS=$((STATIC_PASS + 1))
     else
         echo "  ✗ $desc"
-        exit 1
+        FAIL=$((FAIL + 1))
+        STATIC_FAIL=$((STATIC_FAIL + 1))
     fi
 }
 
-check_feature "pipe(" "使用 pipe() 创建管道"
-check_feature "fork()" "使用 fork() 创建子进程"
-check_feature "select(" "使用 select() 多路复用"
-check_feature "forward_message" "消息转发函数"
-check_feature "notify_exit" "退出通知函数"
-check_feature "MAX_MSG_LEN" "消息长度限制"
-check_feature "不能发送空消息" "空消息错误提示"
-check_feature "消息太长" "消息过长错误提示"
-check_feature "管道可能已关闭" "管道关闭错误提示"
-check_feature "对方已退出" "对方退出通知"
-check_feature "waitpid" "等待子进程退出"
-check_feature "SIGTERM" "信号清理子进程"
+check_runtime() {
+    local desc=$1
+    local condition=$2
+    if eval "$condition"; then
+        echo "  ✓ $desc"
+        PASS=$((PASS + 1))
+        RUNTIME_PASS=$((RUNTIME_PASS + 1))
+    else
+        echo "  ✗ $desc"
+        cat "$OUTPUT_LOG" 2>/dev/null | head -30
+        FAIL=$((FAIL + 1))
+        RUNTIME_FAIL=$((RUNTIME_FAIL + 1))
+    fi
+}
+
+run_chat() {
+    local input="$1"
+    OUTPUT_LOG=$(mktemp)
+    printf '%b' "$input" | ./pipe_chat > "$OUTPUT_LOG" 2>&1
+    local exit_code=$?
+    return $exit_code
+}
+
+# ========== 静态测试 ==========
+echo "[静态测试]"
+
+echo "  [1.1] 检查可执行文件..."
+if [ -x "./pipe_chat" ]; then
+    echo "    ✓ pipe_chat 可执行文件存在"
+    PASS=$((PASS + 1))
+    STATIC_PASS=$((STATIC_PASS + 1))
+else
+    echo "    ✗ pipe_chat 可执行文件不存在，尝试编译..."
+    if make > /dev/null 2>&1 && [ -x "./pipe_chat" ]; then
+        echo "    ✓ 编译成功"
+        PASS=$((PASS + 1))
+        STATIC_PASS=$((STATIC_PASS + 1))
+    else
+        echo "    ✗ 编译失败"
+        FAIL=$((FAIL + 1))
+        STATIC_FAIL=$((STATIC_FAIL + 1))
+        exit 1
+    fi
+fi
+
+echo "  [1.2] 重新编译检查警告..."
+make clean > /dev/null 2>&1
+BUILD_OUTPUT=$(make 2>&1)
+if echo "$BUILD_OUTPUT" | grep -qi "warning"; then
+    echo "    ✗ 编译存在警告"
+    echo "$BUILD_OUTPUT" | grep -i "warning"
+    FAIL=$((FAIL + 1))
+    STATIC_FAIL=$((STATIC_FAIL + 1))
+else
+    echo "    ✓ 编译无警告"
+    PASS=$((PASS + 1))
+    STATIC_PASS=$((STATIC_PASS + 1))
+fi
+
+echo "  [1.3] 检查代码关键功能..."
+check_static "使用 pipe() 创建管道" "pipe("
+check_static "使用 fork() 创建子进程" "fork()"
+check_static "使用 select() 多路复用" "select("
+check_static "消息转发函数存在" "forward_message"
+check_static "退出通知函数存在" "notify_exit"
+check_static "消息长度限制宏定义" "MAX_MSG_LEN"
+check_static "空消息错误提示" "不能发送空消息"
+check_static "消息过长错误提示" "消息太长"
+check_static "管道关闭错误提示" "管道可能已关闭"
+check_static "对方退出通知" "对方已退出"
+check_static "父进程正确关闭 to_child.read_fd" "close(self->to_child.read_fd)"
+check_static "父进程正确关闭 from_child.write_fd" "close(self->from_child.write_fd)"
 
 echo ""
-echo "[测试4] 检查内存安全..."
+echo "  静态测试结果: $STATIC_PASS/$((STATIC_PASS + STATIC_FAIL)) 通过"
 
-# 检查是否有未初始化的变量或潜在问题
-echo "  检查是否正确关闭管道..."
-grep -n "close_pipe\|close_all_pipes" pipe_chat.c > /dev/null && echo "  ✓ 有关闭管道的辅助函数"
+# ========== 运行时测试 ==========
+echo ""
+echo "[运行时测试]"
 
-echo "  检查错误处理..."
-grep -n "perror\|strerror" pipe_chat.c > /dev/null && echo "  ✓ 有错误提示"
+echo "  [2.1] 测试程序正常启动（无 select 失败错误）..."
+run_chat 'quit\nquit\n'
+check_runtime "无 'select 失败' 错误" "! grep -q 'select 失败' '$OUTPUT_LOG'"
+check_runtime "程序输出启动信息" "grep -q '正在启动管道聊天程序' '$OUTPUT_LOG'"
+check_runtime "聊天端 A 启动成功" "grep -q '聊天端 A.*已启动' '$OUTPUT_LOG'"
+check_runtime "聊天端 B 启动成功" "grep -q '聊天端 B.*已启动' '$OUTPUT_LOG'"
+check_runtime "程序正常退出" "grep -q '程序已正常退出' '$OUTPUT_LOG'"
+rm -f "$OUTPUT_LOG"
+
+echo "  [2.2] 测试空消息错误提示..."
+run_chat '\nquit\nquit\n'
+check_runtime "正确提示'不能发送空消息'" "grep -q '不能发送空消息' '$OUTPUT_LOG'"
+rm -f "$OUTPUT_LOG"
+
+echo "  [2.3] 测试长消息错误提示..."
+LONG_MSG=$(python3 -c "print('a' * 300)" 2>/dev/null || printf 'a%.0s' $(seq 1 300))
+run_chat "${LONG_MSG}\nquit\nquit\n"
+check_runtime "正确提示'消息太长'" "grep -q '消息太长' '$OUTPUT_LOG'"
+rm -f "$OUTPUT_LOG"
+
+echo "  [2.4] 测试消息转发功能..."
+run_chat 'HelloFromA\nquit\nquit\n'
+check_runtime "父进程转发消息" "grep -q '转发:' '$OUTPUT_LOG'"
+check_runtime "包含 A -> B 方向" "grep -q 'A -> B' '$OUTPUT_LOG'"
+rm -f "$OUTPUT_LOG"
+
+echo "  [2.5] 测试一方退出后另一方收到通知..."
+run_chat 'quit\nquit\n'
+check_runtime "父进程发送退出通知" "grep -q '通知聊天端' '$OUTPUT_LOG'"
+check_runtime "系统通知包含'聊天端.*已退出'" "grep -q '\[系统\] 聊天端.*已退出' '$OUTPUT_LOG'"
+check_runtime "检测到断开连接" "grep -q '已断开连接' '$OUTPUT_LOG'"
+rm -f "$OUTPUT_LOG"
+
+echo "  [2.6] 测试 Ctrl+D (EOF) 退出..."
+run_chat ''
+check_runtime "正确检测输入关闭" "grep -q '输入已关闭' '$OUTPUT_LOG'"
+check_runtime "程序正常退出" "grep -q '程序已正常退出' '$OUTPUT_LOG'"
+rm -f "$OUTPUT_LOG"
 
 echo ""
-echo "=== 所有测试通过！ ==="
+echo "  运行时测试结果: $RUNTIME_PASS/$((RUNTIME_PASS + RUNTIME_FAIL)) 通过"
+
+# ========== 总结 ==========
 echo ""
-echo "程序使用说明："
-echo "  1. 运行 ./pipe_chat 启动程序"
-echo "  2. 父进程会创建两个聊天端 A 和 B"
-echo "  3. 由于两个子进程共享 stdin，建议在两个终端分别运行聊天端"
-echo "  4. 或者使用以下方式测试（在两个终端分别执行）："
-echo "     终端1: mkfifo /tmp/chat_a /tmp/chat_b"
-echo "     终端1: cat > /tmp/chat_a & cat /tmp/chat_b"
-echo "     终端2: ./pipe_chat < /tmp/chat_a > /tmp/chat_b"
-echo ""
-echo "  快速测试命令："
-echo "    echo -e '你好，B！\\nquit\\n' | timeout 2 ./pipe_chat 2>&1 || true"
+echo "========================================"
+echo "  测试总结: $PASS/$((PASS + FAIL)) 通过"
+echo "   - 静态测试: $STATIC_PASS/$((STATIC_PASS + STATIC_FAIL))"
+echo "   - 运行时测试: $RUNTIME_PASS/$((RUNTIME_PASS + RUNTIME_FAIL))"
+echo "========================================"
+
+if [ $FAIL -eq 0 ]; then
+    echo ""
+    echo "🎉 所有测试通过！"
+    exit 0
+else
+    echo ""
+    echo "❌ 有 $FAIL 个测试失败"
+    exit 1
+fi

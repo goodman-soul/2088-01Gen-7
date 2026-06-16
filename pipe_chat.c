@@ -52,8 +52,8 @@ void chat_end_process(ChatEnd *self, ChatEnd *peer) {
     fd_set readfds;
     int max_fd;
 
-    close(self->to_child.read_fd);
-    close(self->from_child.write_fd);
+    close(self->to_child.write_fd);
+    close(self->from_child.read_fd);
     close(peer->to_child.read_fd);
     close(peer->to_child.write_fd);
     close(peer->from_child.read_fd);
@@ -137,6 +137,8 @@ int spawn_chat_end(ChatEnd *self, ChatEnd *peer) {
         return -1;
     }
 
+    fflush(stdout);
+    fflush(stderr);
     pid_t pid = fork();
     if (pid == -1) {
         perror("创建子进程失败");
@@ -151,10 +153,10 @@ int spawn_chat_end(ChatEnd *self, ChatEnd *peer) {
 
     self->pid = pid;
     self->alive = 1;
-    close(self->to_child.write_fd);
-    close(self->from_child.read_fd);
-    self->to_child.write_fd = -1;
-    self->from_child.read_fd = -1;
+    close(self->to_child.read_fd);
+    close(self->from_child.write_fd);
+    self->to_child.read_fd = -1;
+    self->from_child.write_fd = -1;
 
     return 0;
 }
@@ -292,18 +294,20 @@ int main() {
     printf("\n[父进程] 聊天会话结束，正在清理...\n");
 
     for (int i = 0; i < 2; i++) {
-        close(ends[i].from_child.write_fd);
-        ends[i].from_child.write_fd = -1;
+        if (ends[i].to_child.write_fd != -1) {
+            close(ends[i].to_child.write_fd);
+            ends[i].to_child.write_fd = -1;
+        }
+        if (ends[i].from_child.read_fd != -1) {
+            close(ends[i].from_child.read_fd);
+            ends[i].from_child.read_fd = -1;
+        }
     }
 
     for (int i = 0; i < 2; i++) {
-        if (ends[i].alive) {
-            close(ends[i].to_child.write_fd);
-            ends[i].to_child.write_fd = -1;
+        if (ends[i].pid > 0) {
             waitpid(ends[i].pid, NULL, 0);
             ends[i].alive = 0;
-        } else {
-            waitpid(ends[i].pid, NULL, 0);
         }
     }
 
